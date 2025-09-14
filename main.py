@@ -17,12 +17,9 @@ app = Flask('')
 def home():
     return "I'm making TKG which is Japanese Cuisine."
 
-def run():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
+def run_web_server():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
 
 load_dotenv()
 
@@ -238,4 +235,8 @@ bot_token = os.getenv('DISCORD_BOT_TOKEN')
 if bot_token is None:
     print("エラー: Botのトークンが設定されていません。")
 else:
+    # Webサーバーを別スレッドで起動
+    web_thread = Thread(target=run_web_server)
+    web_thread.start()
+    # Discord Botを起動
     bot.run(bot_token)
