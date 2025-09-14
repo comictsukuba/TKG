@@ -18,6 +18,63 @@ GUILD_ID = os.getenv('GUILD_ID')
 
 bot = commands.Bot(command_prefix="!", intents=intents) 
 
+class TaskCompleteView(discord.ui.View):
+    def __init__(self, tasks_to_select):
+        super().__init__(timeout=300) 
+
+        select = discord.ui.Select(
+            placeholder="完了にするタスクを選択...",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label=task['name'],
+                    value=task['id'],
+                ) for task in tasks_to_select 
+            ]
+        )
+
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, ctx: discord.Interaction):
+
+        selected_task_id = ctx.data['values'][0]
+        
+        tasks = load_tasks()
+        target_task = None
+
+        for task in tasks:
+            if task['id'] == selected_task_id:
+                if task['status'] == 'complete':
+                    await ctx.response.send_message(f"タスク「{task['name']}」は既に完了しています。", ephemeral=True)
+                    return
+                task['status'] = 'complete'
+                target_task = task
+                break
+        
+        if not target_task:
+            await ctx.response.send_message("エラー: タスクが見つかりませんでした。", ephemeral=True)
+            return
+
+        save_task(tasks)
+
+        self.children[0].disabled = True
+        await ctx.message.edit(view=self)
+
+
+        embed = discord.Embed(
+            title="🎉 タスク完了",
+            description=f"タスク「**{target_task['name']}**」を完了しました。",
+            color=discord.Color.dark_green()
+        )
+        assignee_mentions = ', '.join([f'<@{user_id}>' for user_id in target_task['assignees']])
+        embed.add_field(name="担当者", value=assignee_mentions, inline=False)
+        embed.set_footer(text=f"完了操作者: {ctx.user.display_name}")
+        
+        await ctx.response.send_message(embed=embed)
+
+
 TASK_FILE = 'tasks.json'
 
 
@@ -43,7 +100,7 @@ async def on_ready():
 @app_commands.describe(
     task_name="タスク名",
     description="タスクの概要",
-    assignees="担当者をメンションで指定（複数可）。",
+    assignees="担当者をメンションで指定（複数可, 指定がない場合はタスク登録者）。",
     due_date="期限YYYY-MM-DD形式。(任意)"
 )
 async def add_task(
@@ -57,7 +114,7 @@ async def add_task(
     assignee_ids = []
     if assignees:
         assignee_ids = [int(user_id) for user_id in re.findall(r'<@!?(\d+)>', assignees)]
-    
+
     if not assignee_ids:
         assignee_ids = [ctx.user.id]
 
@@ -94,9 +151,71 @@ async def add_task(
         embed.add_field(name="期限", value=validated_due_date, inline=False)
     embed.set_footer(text=f"タスクID: {new_task['id']}")
 
-
     await ctx.response.send_message(embed=embed)
 
+@bot.tree.command(name='check', description='自分のタスクを確認します。', guild=discord.Object(id=GUILD_ID))
+async def check_my_tasks(ctx: discord.Interaction):
+
+    tasks = load_tasks()
+    author_id = ctx.user.id
+
+    my_tasks = [task for task in tasks if author_id in task['assignees'] and task['status'] == 'incomplete']
+
+    if not my_tasks:
+        await ctx.response.send_message("あなたが担当している未完了のタスクはありません。", ephemeral=True)
+        return
+    
+    tasks_for_view = my_tasks[:25]
+    
+    embed = discord.Embed(title=f"📝 {ctx.user.display_name}さんのタスク一覧", color=discord.Color.blue())
+    for task in my_tasks:
+        assignee_mentions = ', '.join([f'<@{user_id}>' for user_id in task['assignees']])
+        due_date_str = f"期限: {task['due_date']}" if task['due_date'] else "期限: なし"
+        
+        field_value = (
+            f"**概要**: {task['description']}\n"
+            f"**担当**: {assignee_mentions}\n"
+            f"**{due_date_str}** | **ID**: `{task['id']}`"
+        )
+        embed.add_field(name=f"{task['name']}", value=field_value, inline=False)
+    
+    view = TaskCompleteView(tasks_for_view)
+
+    await ctx.response.send_message(embed=embed, view=view)
+
+
+@bot.tree.command(name='allcheck', description='全員のタスクを確認します。', guild=discord.Object(id=GUILD_ID))
+async def check_all_tasks(ctx: discord.Interaction):
+
+    tasks = load_tasks()
+    
+    incomplete_tasks = [task for task in tasks if task['status'] == 'incomplete']
+
+    if not incomplete_tasks:
+        await ctx.response.send_message("未完了のタスクはありません。", ephemeral=True)
+        return
+    
+    tasks_for_view = incomplete_tasks[:25]
+
+    embed = discord.Embed(title=f"📝 全てのタスク一覧", color=discord.Color.blue())
+    
+    for task in tasks_for_view:
+        assignee_mentions = ', '.join([f'<@{user_id}>' for user_id in task['assignees']])
+        due_date_str = f"期限: {task['due_date']}" if task['due_date'] else "期限: なし"
+        
+        field_value = (
+            f"**概要**: {task['description']}\n"
+            f"**担当**: {assignee_mentions}\n"
+            f"**{due_date_str}** | **ID**: `{task['id']}`"
+        )
+        embed.add_field(name=f"{task['name']}", value=field_value, inline=False)
+    
+    if len(incomplete_tasks) > 25:
+        embed.set_footer(text=f"タスクが25件以上あります。一部のみ表示しています。")
+
+    view = TaskCompleteView(tasks_for_view)
+
+    await ctx.response.send_message(embed=embed, view=view)
 
 # --- Botの実行 (変更なし) ---
 bot_token = os.getenv('DISCORD_BOT_TOKEN')
